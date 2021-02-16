@@ -1,0 +1,264 @@
+---
+title: "Capitol Attack Documents"
+author: "Jeremy Allen"
+date: "2/11/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+library(assertthat)
+library(here)
+library(tidyverse)
+library(rvest)
+library(polite)
+library(fs)
+
+```
+
+```{r page, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+cases_url <- "https://www.justice.gov/usao-dc/capitol-breach-cases"
+
+# from the polite package, we properly identify ourselves and respect any explicit limits
+session <- bow(cases_url, force = TRUE)
+
+# scrape the page contents
+cases_page <- scrape(session)
+
+```
+
+```{r eda, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# extract the table
+cases_table <- cases_page %>% 
+ html_node("table") %>% 
+ html_table()
+
+# How many cases do we have?
+cases_table %>%
+  pull(`Case Number`) %>%
+  n_distinct()
+
+# How many defendants do we have?
+cases_table %>%
+  pull(`Name`) %>%
+  n_distinct()
+
+# How many documents do we have?
+cases_table %>%
+  pull(`Associated Documents`) %>%
+  n_distinct()
+
+# if any defendant names are duplicated, let's see them
+if (cases_table %>%
+    pull(Name) %>%
+    duplicated() %>%
+    any()) {
+  
+  cases_table %>%
+    count(Name, sort = TRUE) %>% 
+    filter(n > 1) %>% 
+    arrange(desc(n)) %>% 
+    View()
+  
+}
+
+# We want to know if there is a one-to-one or one-to-many relationship
+# between any cases and documents
+
+# if any case numbers are duplicated, let's see them
+if (cases_table %>%
+    pull(`Case Number`) %>%
+    duplicated() %>%
+    any()) {
+  
+  cases_table %>% 
+    group_by(`Case Number`) %>% 
+    mutate(n = n()) %>% 
+    ungroup() %>% 
+    select(n, `Case Number`, everything()) %>% 
+    arrange(desc(n), `Case Number`, Name) %>% 
+    View() # now we can see who all is in each case when there are more than one
+  
+}
+
+# And when we look at the documents column we can see that some people have the
+# same associated documents.BROWN, Terry; CURZIO, Michael; FITCHETT, Cindy;
+# GALLAGHER, Thomas; SWEET, Douglas all share the same "Fitchett et al - Complaint
+# Fitchett et al - Statement of Facts Fitchett -Indictment" document. We must decide
+# if we want to download that document just once or once for each person it's
+# associated with.
+
+# Currently 169 unique document names in the column,
+# but we really need to see how many unique document download links there are.
+
+defendant_names <- cases_page %>%
+  html_nodes("td") %>%
+  html_nodes("a") %>%
+  html_attr('href') %>%
+  str_remove("/usao-dc/defendants/")
+  
+# make a table of just download info
+download_links <- tibble(
+  link_names = cases_page %>% # making the link_names column 
+    html_nodes("td") %>% # links from html table, not from elsewhere in page
+    html_nodes("a") %>%
+    html_text(),
+  link_urls = cases_page %>% # making the link_urls column
+    html_nodes("td") %>% 
+    html_nodes("a") %>%
+    html_attr('href') %>% 
+    str_c("https://www.justice.gov", .) # paste on the missing domain
+) %>% # table is complete, now keep only rows with download links
+  filter(str_detect(link_urls, "download$")) %>% 
+  unique() # no duplicates
+
+# How many unique document download links?
+download_links %>% pull(link_urls) %>% n_distinct()
+
+# Hmm, so the html table had 169 document names, but 322 unique download links.
+# I'm guessing that a single document that is about multiple defendants gets a
+# unique download link each time it's listed for a unique defendant. So now I
+# don't think it's possible to avoid downloading duplicate documents.
+
+# I want to keep everything organized by defendant, so I'm going to loop through
+# each row of the table and capture the download links per person, then while 
+# downloading we will save documents to a folder unique to each defendant even
+# if that means the same document ends up in multiple folders.
+
+# Let's get the contents of each row into a list but drop the header row.
+rows <- cases_page %>%
+  html_nodes("tr") %>% 
+  map(~html_nodes(., "td")) %>% # gets cell content per row
+  compact() # drops empty header row
+
+# Now we can iterate through each element of this list (a row from the html table)
+# and do whatever we want. Let's create a function to do what we want, then map
+# that function over each element of this list.
+
+```
+
+```{r function, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# function that downloads all the docs
+download_defendant_docs <- function(row) {
+  
+  # get the defendant's name
+  # get list of download urls for their documents
+  # create a filename no longer than 45 characters for each document
+  # download docs into folder named after defendant
+  
+  message("**************************************************")
+  
+  defendant <- row %>%
+    html_children() %>% 
+    html_text() %>% 
+    first()
+    
+  if (nchar(defendant) > 0) {
+    defendant <- defendant %>%
+      str_replace_all("&", "and") %>% 
+      str_replace_all("[^a-zA-Z0-9]", "_") %>% # replace all non alpha-numeric
+      str_replace_all("_{2,3}", "_") %>% # replace extra underscores with single underscore
+      str_remove("[^a-zA-Z0-9]$") %>% # remove any non-alpha-numeric at the end
+      str_to_lower()
+  } else {
+    defendant <- "no_name"
+  }
+  
+  # limit defendant names to 45 characters
+  if (nchar(defendant) > 45) {
+      defendant <- str_extract(defendant, "^.{45}")
+    }
+  
+  assert_that(
+    inherits(defendant, "character"),
+    length(defendant) > 0
+  )
+  
+  urls_to_download <- row %>%
+    html_children() %>% 
+    html_nodes("a") %>% 
+    html_attr("href") %>% 
+    map(~str_c("https://www.justice.gov", .)) # prepend missing domain on all links
+  
+  assert_that(
+    inherits(urls_to_download, "list"),
+    length(urls_to_download) > 0,
+    map(urls_to_download, is.na) %>% unlist() %>% sum() == 0
+  )
+  
+  doc_names <- row %>%
+    html_children() %>% 
+    html_nodes("li") %>% # doc links are in html list tags
+    html_text() %>% 
+    as.list() %>% 
+    map(~str_remove(., ".pdf")) %>% # a few filenames have .pdf inside the filename
+    map(~str_replace_all(., "&", "and")) %>% 
+    map(~str_replace_all(., "[^a-zA-Z0-9]", "_")) %>% # replace all non alpha-numeric
+    map(~str_replace_all(., "_{2,3}", "_")) %>% # replace extra underscores with single underscore
+    map(~str_to_lower(.)) %>% 
+    # limit filenames to 45 characters
+    modify_if(.p = ~nchar(.x) > 45, .f = ~str_extract(.x, "^.{45}")) %>% 
+    map(~str_c(., ".pdf")) # append .pdf to all filenames
+  
+  assert_that(
+    inherits(doc_names, "list"),
+    length(doc_names) > 0,
+    map(doc_names, is.na) %>% unlist() %>% sum() == 0
+  )
+  
+  assert_that(
+    length(urls_to_download) == length(doc_names)
+  )
+  
+  message(str_c("... have defendant, doc names, and links, proceeding to download for: ", defendant, "\n"))
+  
+  # confirm or create downloads folder and defendant folder
+  if (!dir_exists(here("downloads"))) {
+    dir_create(here("downloads"))
+  }
+  
+  if (!dir_exists(here("downloads", defendant))) {
+    dir_create(here("downloads", defendant))
+  }
+  
+  # ---- politely download the files (will wait 10 seconds between each) ----
+
+  # function that will take a url and filename and do the downloads
+  get_doc <- function(url , filename) {
+    nod(session, url) %>%
+      rip(destfile = filename,
+          path = here("downloads", defendant),
+          overwrite = TRUE)
+  }
+  
+  # pmap our function over the two columns
+  list(url = urls_to_download, filename = doc_names) %>% 
+    pmap(safely(get_doc)) # wrapped in safely so it won't stop on error
+
+  message(str_c("...finished downloads for: ", defendant, "\n\n\n"))
+  
+}
+
+```
+
+
+```{r download, include=FALSE}
+
+message(str_c("There are ", length(rows), " rows from wich to download documents", "\n"))
+message(str_c("There are ", nrow(download_links), " documents to download", "\n"))
+message(str_c("There will be a 5-second pause between each document", "\n"))
+message(str_c("See https://dmi3kno.github.io/polite/reference/set_delay.html for more details", "\n\n"))
+
+map(rows, download_defendant_docs)
+
+```
+
