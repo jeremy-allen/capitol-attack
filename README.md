@@ -7,3 +7,4 @@ Solution: R’s tidyverse is a good way. The rvest package has easy functions fo
 
 In this Rmd I use only tidyverse packages. I’ll show exploratory data analysis, how to loop through an HTML table with the rvest and purrr packages, automatically create unique folders on your system for each set of documents, and use the amazing polite package to handle identifying ourselves to the web host and limiting our activity on their server so that we do not cause harm.
 
+[See my blog post](https://jeremydata.com/posts/2021-02-16-scrape-hundreds-of-pdf-documents-from-the-web-with-r-and-rvest/) for more details.
