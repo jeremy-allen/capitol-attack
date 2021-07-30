@@ -34,7 +34,7 @@ cases_page <- scrape(session)
 
 ```
 
-```{r eda, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+```{r eda, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
 
 # extract the table
 cases_table <- cases_page %>% 
@@ -123,25 +123,6 @@ download_links <- tibble(
 # How many unique document download links?
 download_links %>% pull(link_urls) %>% n_distinct()
 
-# Hmm, so the html table had 169 document names, but 322 unique download links.
-# I'm guessing that a single document that is about multiple defendants gets a
-# unique download link each time it's listed for a unique defendant. So now I
-# don't think it's possible to avoid downloading duplicate documents.
-
-# I want to keep everything organized by defendant, so I'm going to loop through
-# each row of the table and capture the download links per person, then while 
-# downloading we will save documents to a folder unique to each defendant even
-# if that means the same document ends up in multiple folders.
-
-# Let's get the contents of each row into a list but drop the header row.
-rows <- cases_page %>%
-  html_nodes("tr") %>% 
-  map(~html_nodes(., "td")) %>% # gets cell content per row
-  compact() # drops empty header row
-
-# Now we can iterate through each element of this list (a row from the html table)
-# and do whatever we want. Let's create a function to do what we want, then map
-# that function over each element of this list.
 
 ```
 
@@ -251,7 +232,27 @@ download_defendant_docs <- function(row) {
 ```
 
 
-```{r download, include=FALSE}
+```{r download, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# Hmm, so the html table had 169 document names, but 322 unique download links.
+# I'm guessing that a single document that is about multiple defendants gets a
+# unique download link each time it's listed for a unique defendant. So now I
+# don't think it's possible to avoid downloading duplicate documents.
+
+# I want to keep everything organized by defendant, so I'm going to loop through
+# each row of the table and capture the download links per person, then while 
+# downloading we will save documents to a folder unique to each defendant even
+# if that means the same document ends up in multiple folders.
+
+# Let's get the contents of each row into a list but drop the header row.
+rows <- cases_page %>%
+  html_nodes("tr") %>% 
+  map(~html_nodes(., "td")) %>% # gets cell content per row
+  compact() # drops empty header row
+
+# Now we can iterate through each element of this list (a row from the html table)
+# and do whatever we want. Let's create a function to do what we want, then map
+# that function over each element of this list.
 
 message(str_c("There are ", length(rows), " rows from wich to download documents", "\n"))
 message(str_c("There are ", nrow(download_links), " documents to download", "\n"))
